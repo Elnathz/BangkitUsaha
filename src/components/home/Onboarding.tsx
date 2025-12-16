@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ChevronRight, TrendingUp, Package, ShoppingBag, MessageCircle } from 'lucide-react';
-import { Button } from './ui/button';
+import { Button } from '../ui/button';
 
 interface OnboardingProps {
   onComplete: () => void;

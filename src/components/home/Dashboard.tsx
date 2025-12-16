@@ -14,14 +14,14 @@ import {
     Wifi,
     WifiOff,
 } from "lucide-react";
-import { Card } from "./ui/card";
-import { Button } from "./ui/button";
-import { Badge } from "./ui/badge";
-import { Notifications } from "./Notifications";
-import { Chat } from "./Chat";
-import { Tips } from "./Tips";
-import { Catalog } from "./Catalog";
-import { Community } from "./Community";
+import { Card } from "../ui/card";
+import { Button } from "../ui/button";
+import { Badge } from "../ui/badge";
+import { Notifications } from "../Notifications";
+import { Chat } from "../Chat";
+import { Tips } from "../Tips";
+import { Catalog } from "../Catalog";
+import { Community } from "../Community";
 import { toast } from "sonner";
 
 export function Dashboard() {
