@@ -1,21 +1,23 @@
-import { useState, useEffect } from "react"; // FIXED: Menambahkan useEffect
-import { Search, ShoppingCart, User } from "lucide-react"; // FIXED: Menambahkan ShoppingCart
-import { Card } from "../ui/card"; // FIXED: Path mundur satu langkah
+// FILE: src/components/inventory/Products.tsx
+// LENGKAP dengan Auto-create Chat Room saat Checkout
+
+import { useState, useEffect } from "react";
+import { Search, ShoppingCart, User } from "lucide-react";
+import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { ImageWithFallback } from "../figma/ImageWithFallback";
 import { toast } from "sonner";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog"; // FIXED: Path ../ui/dialog
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import {
     Select,
     SelectContent,
     SelectItem,
     SelectTrigger,
     SelectValue,
-} from "../ui/select"; // FIXED: Path ../ui/select
+} from "../ui/select";
 
 // Firebase
-// FIXED: Path mundur dua langkah (../../) untuk keluar dari inventory -> components -> src
 import { db, auth } from "../../lib/firebase";
 import {
     collection,
@@ -23,6 +25,10 @@ import {
     onSnapshot,
     query,
     Timestamp,
+    doc,
+    setDoc,
+    getDoc,
+    updateDoc,
 } from "firebase/firestore";
 
 export function Products() {
@@ -55,7 +61,7 @@ export function Products() {
         return () => unsubscribe();
     }, [currentUser]);
 
-    // 2. CHECKOUT -> CREATE ORDER
+    // 2. CHECKOUT -> CREATE ORDER + AUTO CREATE CHAT ROOM
     const handleCheckout = async () => {
         if (!currentUser) {
             toast.error("Login dulu untuk membeli");
@@ -70,7 +76,9 @@ export function Products() {
         const toastId = toast.loading("Memproses pesanan...");
 
         try {
-            // Simpan ke database 'orders'
+            // ========================================
+            // STEP 1: SIMPAN ORDER KE DATABASE
+            // ========================================
             await addDoc(collection(db, "orders"), {
                 // Info Produk
                 productId: selectedProduct.id,
@@ -93,25 +101,101 @@ export function Products() {
                 createdAt: Timestamp.now(),
             });
 
+            // ========================================
+            // STEP 2: CREATE/UPDATE CHAT ROOM
+            // ========================================
+            // Chat ID dibuat dari kombinasi 2 user ID (sorted untuk konsistensi)
+            const chatId = [currentUser.uid, selectedProduct.sellerId]
+                .sort()
+                .join("_");
+            const chatRef = doc(db, "chats", chatId);
+
+            // Check apakah chat room sudah ada
+            const chatSnap = await getDoc(chatRef);
+
+            if (!chatSnap.exists()) {
+                // Buat chat room baru
+                await setDoc(chatRef, {
+                    participants: [currentUser.uid, selectedProduct.sellerId],
+                    participantNames: [
+                        currentUser.displayName ||
+                            currentUser.email ||
+                            "Pembeli",
+                        selectedProduct.sellerName,
+                    ],
+                    lastMessage: `Pesanan ${selectedProduct.name}`,
+                    updatedAt: Timestamp.now(),
+                    unreadCount: {
+                        [currentUser.uid]: 0, // Pembeli tidak ada unread
+                        [selectedProduct.sellerId]: 1, // Penjual ada 1 unread (struk)
+                    },
+                    onlineStatus: {
+                        [currentUser.uid]: true,
+                        [selectedProduct.sellerId]: false,
+                    },
+                });
+            } else {
+                // Update chat room yang sudah ada
+                const existingUnread =
+                    chatSnap.data().unreadCount?.[selectedProduct.sellerId] ||
+                    0;
+                await updateDoc(chatRef, {
+                    lastMessage: `Pesanan ${selectedProduct.name}`,
+                    updatedAt: Timestamp.now(),
+                    [`unreadCount.${selectedProduct.sellerId}`]:
+                        existingUnread + 1,
+                });
+            }
+
+            // ========================================
+            // STEP 3: KIRIM SYSTEM MESSAGE (STRUK)
+            // ========================================
+            const strukMessage = `PESANAN BARU
+─────────────────────
+Produk: ${selectedProduct.name}
+Jumlah: ${quantity} x Rp ${selectedProduct.price.toLocaleString()}
+Pembayaran: ${paymentMethod}
+
+TOTAL: Rp ${total.toLocaleString()}
+─────────────────────
+Terima kasih sudah berbelanja!`;
+
+            await addDoc(collection(db, "chats", chatId, "messages"), {
+                text: strukMessage,
+                senderId: "system",
+                createdAt: Timestamp.now(),
+                isSystemMessage: true,
+                read: false,
+            });
+
+            // ========================================
+            // STEP 4: RESET FORM & NOTIFY USER
+            // ========================================
             setIsCheckoutOpen(false);
             setQuantity(1);
             setPaymentMethod("");
             toast.dismiss(toastId);
-            toast.success("Pesanan berhasil dibuat! Cek tab Pesanan.");
+            toast.success(
+                "✅ Pesanan berhasil! Cek tab Pesan untuk chat dengan penjual."
+            );
         } catch (error) {
-            console.error(error);
+            console.error("Error during checkout:", error);
             toast.dismiss(toastId);
-            toast.error("Gagal membeli produk");
+            toast.error("❌ Gagal memproses pesanan. Coba lagi.");
         }
     };
 
+    // Filter produk berdasarkan search query
     const filteredProducts = products.filter((p) =>
         p.name.toLowerCase().includes(searchQuery.toLowerCase())
     );
 
+    // ========================================
+    // RENDER UI
+    // ========================================
     return (
         <div className="bg-gray-50 min-h-screen pb-24">
-            {/* Header */}
+            {/* ===== HEADER ===== */}
             <div className="bg-white p-4 sticky top-0 z-10 border-b shadow-sm">
                 <h1 className="text-xl font-bold mb-3">Pasar Warga</h1>
                 <div className="relative">
@@ -125,7 +209,7 @@ export function Products() {
                 </div>
             </div>
 
-            {/* Product Grid */}
+            {/* ===== PRODUCT GRID ===== */}
             <div className="p-4 grid grid-cols-2 gap-3">
                 {loading ? (
                     <p className="col-span-2 text-center text-gray-400 mt-10">
@@ -143,6 +227,7 @@ export function Products() {
                             key={product.id}
                             className="overflow-hidden flex flex-col"
                         >
+                            {/* Product Image */}
                             <div className="aspect-square relative bg-gray-200">
                                 <ImageWithFallback
                                     src={product.image}
@@ -150,6 +235,8 @@ export function Products() {
                                     className="w-full h-full object-cover"
                                 />
                             </div>
+
+                            {/* Product Info */}
                             <div className="p-3 flex-1 flex flex-col">
                                 <h3 className="font-medium text-sm line-clamp-2 mb-1">
                                     {product.name}
@@ -163,6 +250,8 @@ export function Products() {
                                         {product.sellerName}
                                     </span>
                                 </div>
+
+                                {/* Buy Button */}
                                 <Button
                                     size="sm"
                                     className="mt-auto w-full bg-blue-600 text-xs h-8"
@@ -179,7 +268,7 @@ export function Products() {
                 )}
             </div>
 
-            {/* Checkout Dialog */}
+            {/* ===== CHECKOUT DIALOG ===== */}
             <Dialog open={isCheckoutOpen} onOpenChange={setIsCheckoutOpen}>
                 <DialogContent className="max-w-sm rounded-lg">
                     <DialogHeader>
@@ -187,10 +276,12 @@ export function Products() {
                     </DialogHeader>
                     {selectedProduct && (
                         <div className="space-y-4 py-2">
+                            {/* Product Preview */}
                             <div className="flex gap-3 bg-gray-50 p-2 rounded">
                                 <img
                                     src={selectedProduct.image}
                                     className="w-16 h-16 object-cover rounded"
+                                    alt={selectedProduct.name}
                                 />
                                 <div>
                                     <p className="font-bold text-sm">
@@ -206,6 +297,7 @@ export function Products() {
                                 </div>
                             </div>
 
+                            {/* Quantity Selector */}
                             <div className="flex items-center justify-between border p-2 rounded">
                                 <span className="text-sm">Jumlah</span>
                                 <div className="flex items-center gap-3">
@@ -237,6 +329,7 @@ export function Products() {
                                 </div>
                             </div>
 
+                            {/* Payment Method */}
                             <div className="space-y-2">
                                 <label className="text-sm font-medium">
                                     Metode Pembayaran
@@ -256,6 +349,7 @@ export function Products() {
                                 </Select>
                             </div>
 
+                            {/* Total */}
                             <div className="flex justify-between items-center pt-2 border-t font-bold">
                                 <span>Total</span>
                                 <span className="text-blue-600">
@@ -266,6 +360,7 @@ export function Products() {
                                 </span>
                             </div>
 
+                            {/* Checkout Button */}
                             <Button
                                 className="w-full bg-blue-600"
                                 onClick={handleCheckout}
