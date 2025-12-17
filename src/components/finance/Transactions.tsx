@@ -6,8 +6,8 @@ import {
     Calendar,
     Download,
 } from "lucide-react";
-import { Card } from "./ui/card";
-import { Button } from "./ui/button";
+import { Card } from "../ui/card";
+import { Button } from "../ui/button";
 import {
     Dialog,
     DialogContent,
@@ -15,14 +15,14 @@ import {
     DialogTitle,
     DialogTrigger,
     DialogDescription,
-} from "./ui/dialog";
-import { Input } from "./ui/input";
-import { Label } from "./ui/label";
-import { Textarea } from "./ui/textarea";
+} from "../ui/dialog";
+import { Input } from "../ui/input";
+import { Label } from "../ui/label";
+import { Textarea } from "../ui/textarea";
 import { toast } from "sonner";
 
 // IMPORT FIREBASE
-import { db } from "../lib/firebase";
+import { db } from "../../lib/firebase";
 import {
     collection,
     addDoc,

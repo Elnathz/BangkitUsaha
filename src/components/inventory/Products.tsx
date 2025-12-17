@@ -1,3 +1,4 @@
+<<<<<<< HEAD:src/components/Products.tsx
 import { useState, useEffect } from "react";
 import { Search, ShoppingCart } from "lucide-react";
 import { Card } from "./ui/card";
@@ -13,6 +14,20 @@ import {
     SelectValue,
 } from "./ui/select";
 import { toast } from "sonner";
+=======
+import { useState } from 'react';
+import { Plus, Search, Edit2, Trash2, TrendingUp, DollarSign, Package } from 'lucide-react';
+import { Card } from '../ui/card';
+import { Button } from '../ui/button';
+import { Badge } from '../ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '../ui/dialog';
+import { Input } from '../ui/input';
+import { Label } from '../ui/label';
+import { Textarea } from '../ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
+import { ImageWithFallback } from '../figma/ImageWithFallback';
+import { toast } from 'sonner';
+>>>>>>> 0d2922653b0643285a927fc58686759931d00634:src/components/inventory/Products.tsx
 
 // Import Dialog UI Component yang benar (sesuai struktur project)
 import {
