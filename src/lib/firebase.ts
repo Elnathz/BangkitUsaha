@@ -9,21 +9,12 @@ const firebaseConfig = {
     projectId: "umkm-1802b",
     storageBucket: "umkm-1802b.firebasestorage.app",
     messagingSenderId: "1083523484604",
-    appId: "1:1083523484604:web:c91d43619b1dd6ba7af9b9"
+    appId: "1:1083523484604:web:c91d43619b1dd6ba7af9b9",
 };
 
 const app = initializeApp(firebaseConfig);
 
-export const db = getFirestore(app);
+// Exports
 export const auth = getAuth(app);
-// Inisialisasi Provider Google
+export const db = getFirestore(app);
 export const googleProvider = new GoogleAuthProvider();
-
-try {
-    enableIndexedDbPersistence(db).catch((err) => {
-        console.log("Persistence error", err);
-    });
-} catch (e) {
-    // Ignore
-}
-

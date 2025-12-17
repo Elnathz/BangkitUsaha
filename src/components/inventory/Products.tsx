@@ -1,46 +1,29 @@
-import { useState } from 'react';
-import { Plus, Search, Edit2, Trash2, TrendingUp, DollarSign, Package } from 'lucide-react';
-import { Card } from '../ui/card';
-import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '../ui/dialog';
-import { Input } from '../ui/input';
-import { Label } from '../ui/label';
-import { Textarea } from '../ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
-import { ImageWithFallback } from '../figma/ImageWithFallback';
-import { toast } from 'sonner';
-
-// Import Dialog UI Component yang benar (sesuai struktur project)
+import { useState, useEffect } from "react"; // FIXED: Menambahkan useEffect
+import { Search, ShoppingCart, User } from "lucide-react"; // FIXED: Menambahkan ShoppingCart
+import { Card } from "../ui/card"; // FIXED: Path mundur satu langkah
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { ImageWithFallback } from "../figma/ImageWithFallback";
+import { toast } from "sonner";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog"; // FIXED: Path ../ui/dialog
 import {
-    Dialog as ShadDialog,
-    DialogContent as ShadContent,
-    DialogHeader as ShadHeader,
-    DialogTitle as ShadTitle,
-} from "./ui/dialog";
-import {
-    Select as ShadSelect,
-    SelectContent as ShadSelectContent,
-    SelectItem as ShadSelectItem,
-    SelectTrigger as ShadSelectTrigger,
-    SelectValue as ShadSelectValue,
-} from "./ui/select";
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "../ui/select"; // FIXED: Path ../ui/select
 
 // Firebase
-import { db } from "../lib/firebase";
+// FIXED: Path mundur dua langkah (../../) untuk keluar dari inventory -> components -> src
+import { db, auth } from "../../lib/firebase";
 import {
     collection,
     addDoc,
     onSnapshot,
     query,
-    where,
     Timestamp,
-    getDocs,
 } from "firebase/firestore";
-
-// Simulasi ID User (Sama dengan MyStore)
-const currentUserId = "user-petani-001";
-const currentUserName = "Pak Tani (Saya)";
 
 export function Products() {
     const [products, setProducts] = useState<any[]>([]);
@@ -53,206 +36,183 @@ export function Products() {
     const [paymentMethod, setPaymentMethod] = useState("");
     const [quantity, setQuantity] = useState(1);
 
+    const currentUser = auth.currentUser;
+
     // 1. READ MARKETPLACE (Tampilkan barang orang lain)
     useEffect(() => {
-        // Di aplikasi real, gunakan where("sellerId", "!=", currentUserId)
-        // Tapi karena Firestore basic index limit, kita filter di client side untuk MVP ini
         const q = query(collection(db, "products"));
-
         const unsubscribe = onSnapshot(q, (snapshot) => {
             const data = snapshot.docs
                 .map((doc) => ({ id: doc.id, ...doc.data() }))
-                // Filter: Jangan tampilkan barang jualan saya sendiri di sini
-                .filter((item: any) => item.sellerId !== currentUserId);
+                // Filter di sisi klien: Jangan tampilkan barang saya sendiri
+                .filter((item: any) =>
+                    currentUser ? item.sellerId !== currentUser.uid : true
+                );
 
             setProducts(data);
             setLoading(false);
         });
-
         return () => unsubscribe();
-    }, []);
+    }, [currentUser]);
 
-    // 2. CHECKOUT -> KE CHAT
+    // 2. CHECKOUT -> CREATE ORDER
     const handleCheckout = async () => {
+        if (!currentUser) {
+            toast.error("Login dulu untuk membeli");
+            return;
+        }
         if (!paymentMethod) {
             toast.error("Pilih metode pembayaran");
             return;
         }
 
         const total = selectedProduct.price * quantity;
-        const toastId = toast.loading("Menghubungi penjual...");
+        const toastId = toast.loading("Memproses pesanan...");
 
         try {
-            // Logic Chat Room:
-            // Cek apakah saya sudah pernah chat dengan penjual ini?
-            const chatsRef = collection(db, "chats");
-            // Cari chat yang saya terlibat
-            const q = query(
-                chatsRef,
-                where("participants", "array-contains", currentUserId)
-            );
-            const snapshot = await getDocs(q);
+            // Simpan ke database 'orders'
+            await addDoc(collection(db, "orders"), {
+                // Info Produk
+                productId: selectedProduct.id,
+                productName: selectedProduct.name,
+                price: selectedProduct.price,
+                quantity: quantity,
+                total: total,
+                image: selectedProduct.image,
 
-            let chatRoomId = "";
+                // Info Pembeli (Saya)
+                buyerId: currentUser.uid,
+                buyerName: currentUser.displayName || currentUser.email,
 
-            // Filter manual untuk mencari yang lawan bicaranya adalah sellerId
-            const existingChat = snapshot.docs.find((doc) => {
-                const data = doc.data();
-                return data.participants.includes(selectedProduct.sellerId);
-            });
+                // Info Penjual (Pemilik Barang)
+                sellerId: selectedProduct.sellerId,
+                sellerName: selectedProduct.sellerName,
 
-            if (existingChat) {
-                chatRoomId = existingChat.id;
-            } else {
-                // Buat Room Baru
-                const newChat = await addDoc(chatsRef, {
-                    participants: [currentUserId, selectedProduct.sellerId],
-                    participantNames: [
-                        currentUserName,
-                        selectedProduct.sellerName,
-                    ],
-                    lastMessage: "Pesanan Baru",
-                    updatedAt: Timestamp.now(),
-                    unreadCount: 1,
-                });
-                chatRoomId = newChat.id;
-            }
-
-            // Kirim Struk Pesanan ke Chat
-            const messageText = `KONFIRMASI PESANAN 🛒\n\nItem: ${
-                selectedProduct.name
-            } (x${quantity})\nTotal: Rp ${total.toLocaleString()}\nMetode: ${paymentMethod}\n\nMohon diproses ya kak!`;
-
-            await addDoc(collection(db, "chats", chatRoomId, "messages"), {
-                text: messageText,
-                senderId: currentUserId,
+                status: "pending",
+                paymentMethod: paymentMethod,
                 createdAt: Timestamp.now(),
-                isSystemMessage: true,
             });
 
-            toast.dismiss(toastId);
-            toast.success("Pesanan terkirim ke chat!");
             setIsCheckoutOpen(false);
+            setQuantity(1);
+            setPaymentMethod("");
+            toast.dismiss(toastId);
+            toast.success("Pesanan berhasil dibuat! Cek tab Pesanan.");
         } catch (error) {
             console.error(error);
             toast.dismiss(toastId);
-            toast.error("Gagal checkout");
+            toast.error("Gagal membeli produk");
         }
     };
 
-    // Filter Search
     const filteredProducts = products.filter((p) =>
         p.name.toLowerCase().includes(searchQuery.toLowerCase())
     );
 
     return (
         <div className="bg-gray-50 min-h-screen pb-24">
-            {/* Search Header */}
+            {/* Header */}
             <div className="bg-white p-4 sticky top-0 z-10 border-b shadow-sm">
-                <h1 className="text-lg font-bold mb-3">Cari Produk</h1>
+                <h1 className="text-xl font-bold mb-3">Pasar Warga</h1>
                 <div className="relative">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <Input
-                        placeholder="Mau beli apa hari ini?"
-                        className="pl-9 bg-gray-100 border-none rounded-full"
+                        placeholder="Cari kebutuhan..."
+                        className="pl-9 bg-gray-100 border-none"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                     />
                 </div>
             </div>
 
-            {/* Grid Produk */}
-            <div className="p-4 grid grid-cols-2 gap-4">
+            {/* Product Grid */}
+            <div className="p-4 grid grid-cols-2 gap-3">
                 {loading ? (
-                    <p className="text-gray-500 col-span-2 text-center">
+                    <p className="col-span-2 text-center text-gray-400 mt-10">
                         Memuat pasar...
                     </p>
                 ) : filteredProducts.length === 0 ? (
-                    <p className="text-gray-500 col-span-2 text-center">
-                        Tidak ada produk ditemukan.
-                    </p>
+                    <div className="col-span-2 text-center py-10">
+                        <p className="text-gray-500">
+                            Tidak ada produk ditemukan.
+                        </p>
+                    </div>
                 ) : (
                     filteredProducts.map((product) => (
                         <Card
                             key={product.id}
-                            className="overflow-hidden border-none shadow-sm flex flex-col hover:shadow-md transition-shadow"
+                            className="overflow-hidden flex flex-col"
                         >
-                            <div className="aspect-square bg-gray-200 relative">
-                                <img
+                            <div className="aspect-square relative bg-gray-200">
+                                <ImageWithFallback
                                     src={product.image}
                                     alt={product.name}
-                                    className="object-cover w-full h-full"
+                                    className="w-full h-full object-cover"
                                 />
-                                <Badge className="absolute top-2 left-2 bg-black/50 text-white backdrop-blur-sm">
-                                    {product.category}
-                                </Badge>
                             </div>
                             <div className="p-3 flex-1 flex flex-col">
-                                <h3 className="font-medium text-sm line-clamp-2 leading-tight mb-1">
+                                <h3 className="font-medium text-sm line-clamp-2 mb-1">
                                     {product.name}
                                 </h3>
-                                <p className="text-xs text-gray-500 mb-2">
-                                    Penjual: {product.sellerName}
+                                <p className="text-green-600 font-bold text-sm mb-2">
+                                    Rp {product.price.toLocaleString()}
                                 </p>
-                                <div className="mt-auto flex justify-between items-center">
-                                    <span className="font-bold text-green-600">
-                                        Rp{" "}
-                                        {product.price.toLocaleString("id-ID")}
+                                <div className="flex items-center gap-1 text-[10px] text-gray-500 mb-3">
+                                    <User className="w-3 h-3" />
+                                    <span className="truncate">
+                                        {product.sellerName}
                                     </span>
-                                    <Button
-                                        size="icon"
-                                        className="h-8 w-8 rounded-full bg-blue-600 hover:bg-blue-700 shadow-blue-200 shadow-lg"
-                                        onClick={() => {
-                                            setSelectedProduct(product);
-                                            setIsCheckoutOpen(true);
-                                        }}
-                                    >
-                                        <ShoppingCart className="w-4 h-4" />
-                                    </Button>
                                 </div>
+                                <Button
+                                    size="sm"
+                                    className="mt-auto w-full bg-blue-600 text-xs h-8"
+                                    onClick={() => {
+                                        setSelectedProduct(product);
+                                        setIsCheckoutOpen(true);
+                                    }}
+                                >
+                                    Beli
+                                </Button>
                             </div>
                         </Card>
                     ))
                 )}
             </div>
 
-            {/* Checkout Modal */}
-            <ShadDialog open={isCheckoutOpen} onOpenChange={setIsCheckoutOpen}>
-                <ShadContent className="max-w-sm rounded-xl">
-                    <ShadHeader>
-                        <ShadTitle>Beli Barang</ShadTitle>
-                    </ShadHeader>
-
+            {/* Checkout Dialog */}
+            <Dialog open={isCheckoutOpen} onOpenChange={setIsCheckoutOpen}>
+                <DialogContent className="max-w-sm rounded-lg">
+                    <DialogHeader>
+                        <DialogTitle>Konfirmasi Pembelian</DialogTitle>
+                    </DialogHeader>
                     {selectedProduct && (
                         <div className="space-y-4 py-2">
-                            <div className="flex gap-3 bg-gray-50 p-3 rounded-lg border">
+                            <div className="flex gap-3 bg-gray-50 p-2 rounded">
                                 <img
                                     src={selectedProduct.image}
-                                    className="w-14 h-14 object-cover rounded-md"
+                                    className="w-16 h-16 object-cover rounded"
                                 />
                                 <div>
-                                    <p className="font-medium text-sm">
+                                    <p className="font-bold text-sm">
                                         {selectedProduct.name}
                                     </p>
                                     <p className="text-xs text-gray-500">
-                                        {selectedProduct.sellerName}
+                                        Penjual: {selectedProduct.sellerName}
                                     </p>
-                                    <p className="text-sm font-bold text-green-600 mt-1">
+                                    <p className="text-green-600 text-sm">
                                         Rp{" "}
                                         {selectedProduct.price.toLocaleString()}
                                     </p>
                                 </div>
                             </div>
 
-                            <div className="flex justify-between items-center bg-white p-2 rounded-lg border">
-                                <span className="text-sm font-medium">
-                                    Jumlah
-                                </span>
+                            <div className="flex items-center justify-between border p-2 rounded">
+                                <span className="text-sm">Jumlah</span>
                                 <div className="flex items-center gap-3">
                                     <Button
                                         variant="outline"
-                                        size="sm"
-                                        className="h-8 w-8 p-0"
+                                        size="icon"
+                                        className="h-6 w-6"
                                         onClick={() =>
                                             setQuantity(
                                                 Math.max(1, quantity - 1)
@@ -266,8 +226,8 @@ export function Products() {
                                     </span>
                                     <Button
                                         variant="outline"
-                                        size="sm"
-                                        className="h-8 w-8 p-0"
+                                        size="icon"
+                                        className="h-6 w-6"
                                         onClick={() =>
                                             setQuantity(quantity + 1)
                                         }
@@ -277,29 +237,26 @@ export function Products() {
                                 </div>
                             </div>
 
-                            <div>
-                                <label className="text-sm font-medium mb-1 block">
-                                    Pembayaran
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">
+                                    Metode Pembayaran
                                 </label>
-                                <ShadSelect onValueChange={setPaymentMethod}>
-                                    <ShadSelectTrigger>
-                                        <ShadSelectValue placeholder="Pilih Metode" />
-                                    </ShadSelectTrigger>
-                                    <ShadSelectContent>
-                                        <ShadSelectItem value="DANA">
-                                            DANA (Transfer)
-                                        </ShadSelectItem>
-                                        <ShadSelectItem value="GOPAY">
-                                            GoPay (Transfer)
-                                        </ShadSelectItem>
-                                        <ShadSelectItem value="COD">
+                                <Select onValueChange={setPaymentMethod}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Pilih..." />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="COD">
                                             Bayar di Tempat (COD)
-                                        </ShadSelectItem>
-                                    </ShadSelectContent>
-                                </ShadSelect>
+                                        </SelectItem>
+                                        <SelectItem value="TRANSFER">
+                                            Transfer Bank
+                                        </SelectItem>
+                                    </SelectContent>
+                                </Select>
                             </div>
 
-                            <div className="border-t pt-3 flex justify-between font-bold text-lg">
+                            <div className="flex justify-between items-center pt-2 border-t font-bold">
                                 <span>Total</span>
                                 <span className="text-blue-600">
                                     Rp{" "}
@@ -313,12 +270,13 @@ export function Products() {
                                 className="w-full bg-blue-600"
                                 onClick={handleCheckout}
                             >
-                                Beli Sekarang
+                                <ShoppingCart className="w-4 h-4 mr-2" /> Pesan
+                                Sekarang
                             </Button>
                         </div>
                     )}
-                </ShadContent>
-            </ShadDialog>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }
