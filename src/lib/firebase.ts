@@ -1,7 +1,8 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore, enableIndexedDbPersistence } from "firebase/firestore";
-// Tambahkan GoogleAuthProvider
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
+// 1. Tambahkan import Storage
+import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
     apiKey: "AIzaSyB8pKj1Fsr-4GM4n2zSYu3GI794Q-2rSdE",
@@ -16,8 +17,9 @@ const app = initializeApp(firebaseConfig);
 
 export const db = getFirestore(app);
 export const auth = getAuth(app);
-// Inisialisasi Provider Google
 export const googleProvider = new GoogleAuthProvider();
+// 2. Export storage
+export const storage = getStorage(app);
 
 try {
     enableIndexedDbPersistence(db).catch((err) => {
@@ -26,4 +28,3 @@ try {
 } catch (e) {
     // Ignore
 }
-

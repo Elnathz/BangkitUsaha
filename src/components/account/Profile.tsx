@@ -1,7 +1,8 @@
-import { signOut } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
-import { auth, db } from "../../lib/firebase";
-import { useState, useEffect } from 'react';
+import { signOut, updateProfile } from "firebase/auth";
+import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { auth, db, storage } from "../../lib/firebase";
+import { useState, useEffect, useRef } from 'react';
 import {
   Store,
   MapPin,
@@ -15,31 +16,49 @@ import {
   Settings,
   LogOut,
   ChevronRight,
-  User
+  User,
+  Loader2,
+  Save,
+  X
 } from 'lucide-react';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
+import { Input } from '../ui/input';
 import { toast } from 'sonner';
+
+// Daftar Hari untuk Checkbox
+const DAYS = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
 
 export function Profile() {
   const [businessProfile, setBusinessProfile] = useState({
-    name: 'Memuat Toko...',
-    owner: '', // Field baru untuk nama pemilik
-    category: 'Makanan & Minuman',
-    description: 'Menyediakan berbagai macam makanan tradisional dan cemilan khas dengan kualitas terbaik.',
-    address: 'Jl. Merdeka No. 123, Jakarta Selatan',
-    phone: '081234567890',
-    email: 'ibusari@gmail.com',
-    openingHours: 'Senin - Sabtu: 08:00 - 20:00',
-    established: '2020',
-    rating: 4.8,
-    totalReviews: 156,
-    totalSales: 1247,
-    responseRate: 98,
-    image: 'https://images.unsplash.com/photo-1556910103-1c02745aae4d?w=400',
+    name: 'Memuat...',
+    owner: '',
+    category: 'Belum ada kategori',
+    description: '',
+    address: '',
+    phone: '',
+    email: '',
+    openingHours: '',
+    established: '',
+    rating: 0,
+    totalReviews: 0,
+    totalSales: 0,
+    responseRate: 0,
+    image: '',
   });
+
+  const [uploading, setUploading] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [formData, setFormData] = useState(businessProfile);
+  const [saving, setSaving] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // --- STATE KHUSUS JADWAL ---
+  const [selectedDays, setSelectedDays] = useState<string[]>([]);
+  const [openTime, setOpenTime] = useState("08:00");
+  const [closeTime, setCloseTime] = useState("17:00");
 
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
@@ -50,20 +69,32 @@ export function Profile() {
 
           if (docSnap.exists()) {
             const data = docSnap.data();
-            setBusinessProfile(prev => ({
-              ...prev,
+            const loadedData = {
               name: data.storeName || user.displayName || "Toko Saya",
-              owner: data.ownerName || user.displayName || "Pemilik", // Ambil ownerName dari DB
-              email: user.email || prev.email,
-              phone: data.phoneNumber || prev.phone // Sekalian update no hp jika ada
-            }));
+              owner: data.ownerName || user.displayName || "Pemilik",
+              category: data.category || "Umum",
+              description: data.description || "",
+              address: data.address || "",
+              phone: data.phoneNumber || data.phone || "",
+              email: data.email || user.email || "",
+              openingHours: data.openingHours || "",
+              established: data.established || "",
+              rating: data.rating || 0,
+              totalReviews: data.totalReviews || 0,
+              totalSales: data.totalSales || 0,
+              responseRate: data.responseRate || 0,
+              image: data.image || user.photoURL || ""
+            };
+            setBusinessProfile(prev => ({ ...prev, ...loadedData }));
+            setFormData(prev => ({ ...prev, ...loadedData }));
           } else {
-            setBusinessProfile(prev => ({
-              ...prev,
+            const newData = {
               name: user.displayName || "Toko Baru",
               owner: user.displayName || "Pemilik",
-              email: user.email || prev.email
-            }));
+              email: user.email || ""
+            };
+            setBusinessProfile(prev => ({ ...prev, ...newData }));
+            setFormData(prev => ({ ...prev, ...newData }));
           }
         } catch (error) {
           console.error("Error fetching store data:", error);
@@ -73,6 +104,138 @@ export function Profile() {
     return () => unsubscribe();
   }, []);
 
+  // --- LOGIC PARSING JADWAL SAAT EDIT ---
+  // Fungsi ini mencoba membaca format "Senin, Selasa: 08:00 - 17:00" agar checkbox terisi otomatis
+  const parseSchedule = (scheduleString: string) => {
+    if (!scheduleString) return;
+
+    try {
+      const parts = scheduleString.split(': '); // Pisahkan Hari dan Jam
+      if (parts.length === 2) {
+        const daysPart = parts[0].split(', '); // Pisahkan nama-nama hari
+        const timesPart = parts[1].split(' - '); // Pisahkan jam buka - tutup
+
+        // Validasi sederhana apakah hari yang ada valid
+        const validDays = daysPart.filter(d => DAYS.includes(d));
+        if (validDays.length > 0) setSelectedDays(validDays);
+
+        if (timesPart.length === 2) {
+          setOpenTime(timesPart[0]);
+          setCloseTime(timesPart[1]);
+        }
+      }
+    } catch (e) {
+      // Jika format beda, biarkan default
+      console.log("Format jadwal manual, reset ke default picker");
+    }
+  };
+
+  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Ukuran foto maksimal 2MB");
+      return;
+    }
+    if (!auth.currentUser) return;
+
+    setUploading(true);
+    const toastId = toast.loading("Mengunggah foto...");
+
+    try {
+      const storageRef = ref(storage, `profile_photos/${auth.currentUser.uid}`);
+      await uploadBytes(storageRef, file);
+      const downloadURL = await getDownloadURL(storageRef);
+      const userDocRef = doc(db, "users", auth.currentUser.uid);
+      await updateDoc(userDocRef, { image: downloadURL });
+      await updateProfile(auth.currentUser, { photoURL: downloadURL });
+      setBusinessProfile(prev => ({ ...prev, image: downloadURL }));
+      toast.success("Foto profil berhasil diperbarui!", { id: toastId });
+    } catch (error) {
+      console.error("Upload error:", error);
+      toast.error("Gagal mengunggah foto.", { id: toastId });
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const toggleEdit = () => {
+    if (!isEditing) {
+      setFormData(businessProfile);
+      // Saat masuk mode edit, coba baca jadwal yang sudah ada
+      parseSchedule(businessProfile.openingHours);
+    }
+    setIsEditing(!isEditing);
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+  };
+
+  // --- LOGIC BUILDER JADWAL (CHECKBOX & TIME) ---
+  const handleDayToggle = (day: string) => {
+    const newDays = selectedDays.includes(day)
+      ? selectedDays.filter(d => d !== day)
+      : [...selectedDays, day];
+
+    // Urutkan hari sesuai urutan minggu
+    newDays.sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b));
+    setSelectedDays(newDays);
+    updateOpeningHoursString(newDays, openTime, closeTime);
+  };
+
+  const handleTimeChange = (type: 'open' | 'close', value: string) => {
+    if (type === 'open') {
+      setOpenTime(value);
+      updateOpeningHoursString(selectedDays, value, closeTime);
+    } else {
+      setCloseTime(value);
+      updateOpeningHoursString(selectedDays, openTime, value);
+    }
+  };
+
+  const updateOpeningHoursString = (days: string[], open: string, close: string) => {
+    // Format Akhir: "Senin, Selasa, Rabu: 08:00 - 17:00"
+    let result = "";
+    if (days.length === 0) {
+      result = "Tutup / Belum diatur";
+    } else if (days.length === 7) {
+      result = `Setiap Hari: ${open} - ${close}`;
+    } else {
+      result = `${days.join(', ')}: ${open} - ${close}`;
+    }
+    setFormData(prev => ({ ...prev, openingHours: result }));
+  };
+  // ----------------------------------------------
+
+  const handleSaveProfile = async () => {
+    if (!auth.currentUser) return;
+    setSaving(true);
+    try {
+      const userDocRef = doc(db, "users", auth.currentUser.uid);
+      const updates = {
+        description: formData.description,
+        address: formData.address,
+        phoneNumber: formData.phone,
+        email: formData.email,
+        openingHours: formData.openingHours, // String hasil builder
+        established: formData.established
+      };
+
+      await updateDoc(userDocRef, updates);
+      setBusinessProfile(prev => ({ ...prev, ...formData }));
+      setIsEditing(false);
+      toast.success("Informasi bisnis berhasil disimpan!");
+    } catch (error) {
+      console.error("Save error:", error);
+      toast.error("Gagal menyimpan perubahan.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const stats = [
     { label: 'Total Penjualan', value: businessProfile.totalSales.toString(), icon: Award },
     { label: 'Rating', value: businessProfile.rating.toString(), icon: Star },
@@ -80,21 +243,10 @@ export function Profile() {
     { label: 'Respon Rate', value: `${businessProfile.responseRate}%`, icon: Award },
   ];
 
-  const handleEditProfile = () => {
-    toast.info('Membuka editor profil bisnis...');
-  };
-
-  const handleChangePhoto = () => {
-    toast.info('Fitur upload foto akan segera tersedia');
-  };
-
-  const handleViewAllReviews = () => {
-    toast.info('Menampilkan semua ulasan pelanggan...');
-  };
-
-  const handleSettings = () => {
-    toast.info('Membuka pengaturan aplikasi...');
-  };
+  const handleEditProfile = () => { toggleEdit(); };
+  const handleChangePhoto = () => { fileInputRef.current?.click(); };
+  const handleViewAllReviews = () => { toast.info('Menampilkan semua ulasan pelanggan...'); };
+  const handleSettings = () => { toast.info('Membuka pengaturan aplikasi...'); };
 
   const handleLogout = async () => {
     if (confirm('Apakah Anda yakin ingin keluar?')) {
@@ -142,52 +294,41 @@ export function Profile() {
 
   return (
     <div className="bg-gray-50 min-h-screen pb-6">
-      {/* Header with Cover */}
+      <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
+
+      {/* Header */}
       <div className="relative">
         <div className="h-32 bg-gradient-to-r from-blue-600 to-purple-600"></div>
         <div className="absolute top-20 left-1/2 transform -translate-x-1/2">
           <div className="relative">
             <Avatar className="w-24 h-24 border-4 border-white shadow-lg">
-              <AvatarImage
-                src={auth.currentUser?.photoURL || businessProfile.image}
-                referrerPolicy="no-referrer"
-                className="object-cover"
-              />
+              <AvatarImage src={auth.currentUser?.photoURL || businessProfile.image} referrerPolicy="no-referrer" className="object-cover" />
               <AvatarFallback className="bg-blue-600 text-white">
                 {businessProfile.name.charAt(0)}
               </AvatarFallback>
             </Avatar>
-            <button className="absolute bottom-0 right-0 bg-blue-600 text-white p-2 rounded-full shadow-lg" onClick={handleChangePhoto}>
-              <Camera className="w-4 h-4" />
+            <button className="absolute bottom-0 right-0 bg-blue-600 text-white p-2 rounded-full shadow-lg hover:bg-blue-700 transition-colors" onClick={handleChangePhoto} disabled={uploading}>
+              {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
             </button>
           </div>
         </div>
       </div>
 
       <div className="px-4 pt-16">
-
-        {/* BAGIAN NAMA TOKO & PEMILIK */}
         <div className="text-center mb-6">
-          {/* Nama Toko (Tebal & Besar) */}
           <h2 className="font-bold text-2xl capitalize text-gray-900 mb-1">{businessProfile.name}</h2>
-
-          {/* Nama Pemilik (Kecil & Abu-abu) */}
           <div className="flex items-center justify-center gap-1 text-sm text-gray-500 mb-2">
             <User className="w-3 h-3" />
             <span className="font-medium capitalize">{businessProfile.owner}</span>
           </div>
-
           <Badge variant="secondary" className="mb-2">{businessProfile.category}</Badge>
-
           <div className="flex items-center justify-center gap-1 text-orange-500 mt-1">
             <Star className="w-4 h-4 fill-orange-500" />
             <span className="font-semibold text-sm">{businessProfile.rating}</span>
             <span className="text-gray-400 text-xs">({businessProfile.totalReviews} ulasan)</span>
           </div>
         </div>
-        {/* --------------------------- */}
 
-        {/* Stats Grid */}
         <div className="grid grid-cols-4 gap-2 mb-6">
           {stats.map((stat, index) => {
             const Icon = stat.icon;
@@ -201,67 +342,147 @@ export function Profile() {
           })}
         </div>
 
-        {/* Business Info */}
         <Card className="p-4 mb-4">
-          <div className="flex justify-between items-start mb-4">
+          <div className="flex justify-between items-center mb-4">
             <h3 className="font-semibold text-gray-900">Informasi Bisnis</h3>
-            <Button variant="ghost" size="sm" onClick={handleEditProfile}>
-              <Edit2 className="w-4 h-4" />
-            </Button>
+            {isEditing ? (
+              <div className="flex gap-2">
+                <Button variant="ghost" size="sm" onClick={toggleEdit} className="h-8 w-8 p-0 text-red-500 bg-red-50 hover:bg-red-100 rounded-full">
+                  <X className="w-4 h-4" />
+                </Button>
+                <Button size="sm" onClick={handleSaveProfile} disabled={saving} className="h-8 bg-green-600 hover:bg-green-700 text-white rounded-full px-4">
+                  {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <><Save className="w-3 h-3 mr-1" /> Simpan</>}
+                </Button>
+              </div>
+            ) : (
+              <Button variant="ghost" size="sm" onClick={toggleEdit}>
+                <Edit2 className="w-4 h-4" />
+              </Button>
+            )}
           </div>
 
-          <p className="text-sm text-gray-600 mb-4 leading-relaxed">{businessProfile.description}</p>
+          <div className="mb-4">
+            {isEditing ? (
+              <textarea
+                name="description"
+                value={formData.description}
+                onChange={handleInputChange}
+                placeholder="Contoh: Toko kami menyediakan..."
+                className="w-full text-sm p-2 border rounded-md min-h-[80px] focus:ring-2 focus:ring-blue-500 outline-none"
+              />
+            ) : (
+              <p className={`text-sm leading-relaxed ${!businessProfile.description ? 'text-gray-400 italic' : 'text-gray-600'}`}>
+                {businessProfile.description || "Deskripsi toko belum diisi."}
+              </p>
+            )}
+          </div>
 
-          <div className="space-y-3">
+          <div className="space-y-4">
             <div className="flex gap-3">
-              <MapPin className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" />
-              <div>
+              <MapPin className="w-5 h-5 text-gray-400 flex-shrink-0 mt-2" />
+              <div className="w-full">
                 <p className="text-xs text-gray-500 mb-0.5">Alamat</p>
-                <p className="text-sm font-medium text-gray-900">{businessProfile.address}</p>
+                {isEditing ? (
+                  <Input name="address" value={formData.address} onChange={handleInputChange} placeholder="Alamat lengkap" className="h-8 text-sm" />
+                ) : (
+                  <p className="text-sm font-medium text-gray-900">{businessProfile.address || "-"}</p>
+                )}
               </div>
             </div>
 
             <div className="flex gap-3">
-              <Phone className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" />
-              <div>
+              <Phone className="w-5 h-5 text-gray-400 flex-shrink-0 mt-2" />
+              <div className="w-full">
                 <p className="text-xs text-gray-500 mb-0.5">Telepon</p>
-                <p className="text-sm font-medium text-gray-900">{businessProfile.phone}</p>
+                {isEditing ? (
+                  <Input name="phone" value={formData.phone} onChange={handleInputChange} placeholder="08..." className="h-8 text-sm" />
+                ) : (
+                  <p className="text-sm font-medium text-gray-900">{businessProfile.phone || "-"}</p>
+                )}
               </div>
             </div>
 
             <div className="flex gap-3">
-              <Mail className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" />
-              <div>
+              <Mail className="w-5 h-5 text-gray-400 flex-shrink-0 mt-2" />
+              <div className="w-full">
                 <p className="text-xs text-gray-500 mb-0.5">Email</p>
-                <p className="text-sm font-medium text-gray-900">{businessProfile.email}</p>
+                {isEditing ? (
+                  <Input name="email" value={formData.email} onChange={handleInputChange} placeholder="Email bisnis" className="h-8 text-sm" />
+                ) : (
+                  <p className="text-sm font-medium text-gray-900">{businessProfile.email || "-"}</p>
+                )}
               </div>
             </div>
 
+            {/* --- BAGIAN JAM OPERASIONAL YANG DIUBAH --- */}
             <div className="flex gap-3">
-              <Clock className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" />
-              <div>
+              <Clock className="w-5 h-5 text-gray-400 flex-shrink-0 mt-2" />
+              <div className="w-full">
                 <p className="text-xs text-gray-500 mb-0.5">Jam Operasional</p>
-                <p className="text-sm font-medium text-gray-900">{businessProfile.openingHours}</p>
+                {isEditing ? (
+                  <div className="bg-gray-50 p-3 rounded-lg border border-dashed border-gray-300 space-y-3">
+                    {/* 1. Pilih Hari */}
+                    <div>
+                      <span className="text-xs font-semibold text-gray-600 block mb-2">Pilih Hari Buka:</span>
+                      <div className="flex flex-wrap gap-2">
+                        {DAYS.map(day => (
+                          <label key={day} className={`flex items-center justify-center px-3 py-1 rounded-full text-xs cursor-pointer border transition-all ${selectedDays.includes(day) ? 'bg-blue-100 border-blue-400 text-blue-700 font-medium' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-100'}`}>
+                            <input
+                              type="checkbox"
+                              className="hidden"
+                              checked={selectedDays.includes(day)}
+                              onChange={() => handleDayToggle(day)}
+                            />
+                            {day.substring(0, 3)} {/* Tampilkan Singkatan (Sen, Sel...) agar hemat tempat */}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 2. Pilih Jam */}
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1">
+                        <span className="text-xs text-gray-500 block mb-1">Buka</span>
+                        <Input type="time" value={openTime} onChange={(e) => handleTimeChange('open', e.target.value)} className="h-8 text-xs bg-white" />
+                      </div>
+                      <span className="text-gray-400 mt-4">-</span>
+                      <div className="flex-1">
+                        <span className="text-xs text-gray-500 block mb-1">Tutup</span>
+                        <Input type="time" value={closeTime} onChange={(e) => handleTimeChange('close', e.target.value)} className="h-8 text-xs bg-white" />
+                      </div>
+                    </div>
+
+                    {/* Preview Hasil */}
+                    <div className="text-xs text-center text-gray-400 pt-1 border-t">
+                      Preview: {formData.openingHours || "Belum diatur"}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm font-medium text-gray-900">{businessProfile.openingHours || "-"}</p>
+                )}
               </div>
             </div>
+            {/* ------------------------------------------- */}
 
             <div className="flex gap-3">
-              <Store className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" />
-              <div>
+              <Store className="w-5 h-5 text-gray-400 flex-shrink-0 mt-2" />
+              <div className="w-full">
                 <p className="text-xs text-gray-500 mb-0.5">Berdiri Sejak</p>
-                <p className="text-sm font-medium text-gray-900">{businessProfile.established}</p>
+                {isEditing ? (
+                  <Input name="established" value={formData.established} onChange={handleInputChange} placeholder="Tahun" className="h-8 text-sm" />
+                ) : (
+                  <p className="text-sm font-medium text-gray-900">{businessProfile.established || "-"}</p>
+                )}
               </div>
             </div>
           </div>
         </Card>
 
-        {/* Reviews */}
         <Card className="p-4 mb-4">
           <div className="flex justify-between items-center mb-4">
             <h3 className="font-semibold text-gray-900">Ulasan Pelanggan</h3>
             <button className="text-sm text-blue-600 font-medium" onClick={handleViewAllReviews}>Lihat Semua</button>
           </div>
-
           <div className="space-y-4">
             {reviews.map((review) => (
               <div key={review.id} className="pb-4 border-b last:border-0 last:pb-0">
@@ -277,18 +498,13 @@ export function Profile() {
                 </div>
                 <p className="text-sm text-gray-600 mb-2">{review.comment}</p>
                 <p className="text-xs text-gray-400">
-                  {new Date(review.date).toLocaleDateString('id-ID', {
-                    day: 'numeric',
-                    month: 'long',
-                    year: 'numeric'
-                  })}
+                  {new Date(review.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}
                 </p>
               </div>
             ))}
           </div>
         </Card>
 
-        {/* Menu Items */}
         <Card className="mb-4 overflow-hidden">
           {menuItems.map((item, index) => {
             const Icon = item.icon;
@@ -296,8 +512,7 @@ export function Profile() {
               <button
                 key={index}
                 onClick={item.action}
-                className={`w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors ${index !== menuItems.length - 1 ? 'border-b border-gray-100' : ''
-                  } ${item.danger ? 'text-red-600 hover:bg-red-50' : 'text-gray-700'}`}
+                className={`w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors ${index !== menuItems.length - 1 ? 'border-b border-gray-100' : ''} ${item.danger ? 'text-red-600 hover:bg-red-50' : 'text-gray-700'}`}
               >
                 <div className="flex items-center gap-3">
                   <div className={`p-2 rounded-lg ${item.danger ? 'bg-red-100' : 'bg-gray-100'}`}>
